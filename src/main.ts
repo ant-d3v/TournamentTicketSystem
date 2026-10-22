@@ -14,7 +14,8 @@ const SATISFACTION_TEXT = [
 
 const HELP = `Forms teams of 5 (one player per pot) from ticket exchanges.
 
-Reads data/players.csv (discord_id,pot) and data/tickets.csv (from,to).
+Reads data/players.csv (discord_id,pot) and data/tickets.csv (the bot's ticket export).
+Only players listed in players.csv take part.
 Only mutual tickets count as connections. The script searches for the arrangement
 with the highest total satisfaction, fills the remaining slots randomly,
 and writes the result to report.html and teams.csv.
@@ -148,13 +149,55 @@ ${report.join("\n")}`;
 
 // ---------- Input ----------
 
-// players.csv: discord_id,pot; tickets.csv: from,to
-const rows = (path: string) =>
-	readFileSync(path, "utf8")
-		.trim()
-		.split(/\r?\n/)
-		.slice(1)
-		.map((line) => line.split(",").map((s) => s.trim()));
+// Reads a CSV file into one object per row, keyed by the header names.
+// Handles quoted fields ("a, b" and "" for a quote inside quotes) and the invisible BOM some exports start with
+const readCsv = (path: string) => {
+	const text = readFileSync(path, "utf8").replace(/^\uFEFF/, "");
+	const lines: string[][] = [];
+	let row: string[] = [];
+	let field = "";
+	let quoted = false;
+	for (let i = 0; i < text.length; i++) {
+		const c = text[i];
+		if (quoted) {
+			if (c === '"' && text[i + 1] === '"') {
+				field += '"';
+				i++;
+			} else if (c === '"') {
+				quoted = false;
+			} else {
+				field += c;
+			}
+		} else if (c === '"') {
+			quoted = true;
+		} else if (c === ",") {
+			row.push(field);
+			field = "";
+		} else if (c === "\n" || c === "\r") {
+			if (c === "\r" && text[i + 1] === "\n") i++;
+			row.push(field);
+			lines.push(row);
+			row = [];
+			field = "";
+		} else {
+			field += c;
+		}
+	}
+	row.push(field);
+	lines.push(row);
+
+	const [header, ...data] = lines.filter((line) => line.some((value) => value.trim() !== ""));
+	return data.map((values) =>
+		Object.fromEntries(header.map((name, i) => [name.trim(), (values[i] ?? "").trim()]))
+	);
+};
+
+// Stops with a clear message if a CSV file doesn't have the columns the script needs
+const requireColumns = (rows: Record<string, string>[], path: string, columns: string[]) => {
+	for (const column of columns) {
+		if (rows.length > 0 && !(column in rows[0])) throw new Error(`${path} has no column "${column}"`);
+	}
+};
 
 type Ticket = [ from: string, to: string ];
 
@@ -166,9 +209,40 @@ type Player = {
 	random: number;          // tiebreaker for sorting
 };
 
-const playerData = new Map(rows("data/players.csv").map(([id, pot]) => [id, Number(pot)]));
-const tickets = rows("data/tickets.csv") as Ticket[];
+// players.csv: discord_id,pot. This list decides who takes part
+const playerRows = readCsv("data/players.csv");
+requireColumns(playerRows, "data/players.csv", ["discord_id", "pot"]);
+const playerData = new Map(playerRows.map((r) => [r.discord_id, Number(r.pot)]));
 const ids = [...playerData.keys()];
+
+// tickets.csv: the bot's export, one row per ticket slot. Rows without a target are unused tickets
+const ticketRows = readCsv("data/tickets.csv");
+requireColumns(ticketRows, "data/tickets.csv", ["owner_discord_id", "owner_name", "target_discord_id", "target_name"]);
+const tickets: Ticket[] = ticketRows
+	.filter((r) => r.target_discord_id !== "")
+	.map((r) => [r.owner_discord_id, r.target_discord_id]);
+
+// id -> name from the export, for readable tables. Duplicate names get their id added
+const exportNames = new Map<string, string>();
+for (const r of ticketRows) {
+	if (r.owner_name) exportNames.set(r.owner_discord_id, r.owner_name);
+	if (r.target_discord_id && r.target_name) exportNames.set(r.target_discord_id, r.target_name);
+}
+const nameUses = new Map<string, number>();
+for (const id of ids) {
+	const name = exportNames.get(id) ?? id;
+	nameUses.set(name, (nameUses.get(name) ?? 0) + 1);
+}
+const nameOf = (id: string) => {
+	const name = exportNames.get(id) ?? id;
+	return (nameUses.get(name) ?? 0) > 1 ? `${name} (${id})` : name;
+};
+
+// Players in the export who are not in players.csv are ignored, list them so nobody is missed by accident
+const ignored = [...new Set(ticketRows.map((r) => r.owner_discord_id))].filter((id) => !playerData.has(id));
+if (ignored.length > 0) {
+	note(`Ignored (in the ticket export but not in players.csv): ${ignored.map((id) => exportNames.get(id) ?? id).join(", ")}`);
+}
 
 // id -> ids of players they sent a ticket to
 const playerTickets = new Map<string, Set<string>>(ids.map((id) => [id, new Set()]));
@@ -200,9 +274,9 @@ show(
 	players
 		.filter((p) => p.nonmutuals.length > 0)
 		.map(({ id, pot, nonmutuals }) => ({
-			id,
+			name: nameOf(id),
 			pot,
-			nonmutuals: nonmutuals.join(", "),
+			nonmutuals: nonmutuals.map(nameOf).join(", "),
 		}))
 );
 
@@ -441,7 +515,7 @@ for (const team of teams) {
 		const group = playerGroups.get(id);
 		if (!group || group.size < 2) continue;
 		if (!teamGroups.includes(group)) teamGroups.push(group);
-		playerColor.set(id, `group${teamGroups.indexOf(group) + 1}`);
+		playerColor.set(nameOf(id), `group${teamGroups.indexOf(group) + 1}`);
 	}
 }
 
@@ -450,7 +524,7 @@ const playerById = new Map(players.map((p) => [p.id, p]));
 show(
 	"Teams",
 	teams.map((team) => ({
-		...Object.fromEntries(pots.map((pot) => [`pot ${pot}`, team.get(pot)])),
+		...Object.fromEntries(pots.map((pot) => [`pot ${pot}`, nameOf(team.get(pot)!)])),
 		satisfaction: [...team.values()]
 			.reduce((sum, id) => sum + satisfaction(playerById.get(id)!, playerGroups), 0)
 			.toFixed(2),
@@ -476,12 +550,13 @@ note("Teams written to teams.csv");
 show(
 	"Satisfaction",
 	connected.map((p) => ({
-		id: p.id,
+		name: nameOf(p.id),
 		pot: p.pot,
 		satisfied: `${satisfiedCount(p, playerGroups)}/${p.connections.length}`,
 		score: satisfaction(p, playerGroups),
 		dropped: p.connections
 			.filter((other) => playerGroups.get(other) !== playerGroups.get(p.id))
+			.map(nameOf)
 			.join(", "),
 	}))
 );
