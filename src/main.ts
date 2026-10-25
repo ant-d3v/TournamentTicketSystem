@@ -507,6 +507,10 @@ for (const pot of pots) {
 	}
 }
 
+// Shuffle the team order, so a team's number doesn't show how it was formed.
+// splice replaces the array's contents in place, since teams is a const
+teams.splice(0, teams.length, ...shuffle(teams, teamRandom));
+
 // Color per player: group1 / group2 for the first / second ticket group within their team
 const playerColor = new Map<string, string>();
 for (const team of teams) {
@@ -544,7 +548,14 @@ const csvRows = [
 	...teams.map((team, i) => [i + 1, ...pots.map((pot) => team.get(pot))]),
 ];
 writeFileSync("teams.csv", csvRows.map((row) => row.map(csvValue).join(",")).join("\n") + "\n");
-note("Teams written to teams.csv");
+
+// The same teams with player names instead of ids, for importing into Google Sheets
+const csvNameRows = [
+	["team", ...pots.map((pot) => `pot ${pot}`)],
+	...teams.map((team, i) => [i + 1, ...pots.map((pot) => nameOf(team.get(pot)!))]),
+];
+writeFileSync("teams_export.csv", csvNameRows.map((row) => row.map(csvValue).join(",")).join("\n") + "\n");
+note("Teams written to teams.csv (Discord ids) and teams_export.csv (names)");
 
 // Log satisfaction per player, including dropped connections
 show(
