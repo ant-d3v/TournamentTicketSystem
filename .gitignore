@@ -1,9 +1,15 @@
 # Dependencies
 node_modules/
 
+# Data input
+/data/players.csv
+/data/tickets.csv
+
 # Generated output (written by src/main.ts)
 report.html
 teams.csv
+teams_export.csv
+matchups.csv
 
 # Logs
 npm-debug.log*
