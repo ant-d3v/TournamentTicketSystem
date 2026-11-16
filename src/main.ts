@@ -14,8 +14,8 @@ const SATISFACTION_TEXT = [
 
 const HELP = `Forms teams of 5 (one player per pot) from ticket exchanges.
 
-Reads data/players.csv (discord_id,pot) and data/tickets.csv (the bot's ticket export).
-Only players listed in players.csv take part.
+Reads data/players.csv (discord_id,pot,name) and data/tickets.csv (the bot's ticket export).
+Only players listed in players.csv take part. Names come from players.csv.
 Only mutual tickets count as connections. The script searches for the arrangement
 with the highest total satisfaction, fills the remaining slots randomly,
 and writes the result to report.html and teams.csv.
@@ -209,10 +209,11 @@ type Player = {
 	random: number;          // tiebreaker for sorting
 };
 
-// players.csv: discord_id,pot. This list decides who takes part
+// players.csv: discord_id,pot,name. This list decides who takes part
 const playerRows = readCsv("data/players.csv");
-requireColumns(playerRows, "data/players.csv", ["discord_id", "pot"]);
+requireColumns(playerRows, "data/players.csv", ["discord_id", "pot", "name"]);
 const playerData = new Map(playerRows.map((r) => [r.discord_id, Number(r.pot)]));
+const playerNames = new Map(playerRows.map((r) => [r.discord_id, r.name]));
 const ids = [...playerData.keys()];
 
 // tickets.csv: the bot's export, one row per ticket slot. Rows without a target are unused tickets
@@ -222,19 +223,22 @@ const tickets: Ticket[] = ticketRows
 	.filter((r) => r.target_discord_id !== "")
 	.map((r) => [r.owner_discord_id, r.target_discord_id]);
 
-// id -> name from the export, for readable tables. Duplicate names get their id added
+// id -> name from the export, only used for players who are not in players.csv
 const exportNames = new Map<string, string>();
 for (const r of ticketRows) {
 	if (r.owner_name) exportNames.set(r.owner_discord_id, r.owner_name);
 	if (r.target_discord_id && r.target_name) exportNames.set(r.target_discord_id, r.target_name);
 }
+
+// Name from players.csv, else from the export, else the id. Duplicate names get their id added
+const baseName = (id: string) => playerNames.get(id) || exportNames.get(id) || id;
 const nameUses = new Map<string, number>();
 for (const id of ids) {
-	const name = exportNames.get(id) ?? id;
+	const name = baseName(id);
 	nameUses.set(name, (nameUses.get(name) ?? 0) + 1);
 }
 const nameOf = (id: string) => {
-	const name = exportNames.get(id) ?? id;
+	const name = baseName(id);
 	return (nameUses.get(name) ?? 0) > 1 ? `${name} (${id})` : name;
 };
 
